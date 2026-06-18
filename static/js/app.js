@@ -21,7 +21,8 @@ const ICONS = {
     share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>`,
     check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
     link: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>`,
-    twitter: `<svg viewBox="0 0 24 24" fill="currentColor" class="icon"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`
+    twitter: `<svg viewBox="0 0 24 24" fill="currentColor" class="icon"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`,
+    copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`
 };
 
 // Initialize Application
@@ -347,6 +348,9 @@ function renderEntry(container, entry, items, searchQuery) {
                         <button class="btn-action-icon btn-tweet" data-anchor-id="${entry.anchor_id}" data-date="${entry.date}" data-type="${item.type}" title="Tweet about this update">
                             ${ICONS.twitter}
                         </button>
+                        <button class="btn-action-icon btn-copy-note" data-date="${entry.date}" data-type="${item.type}" title="Copy release note to clipboard">
+                            ${ICONS.copy}
+                        </button>
                         <button class="btn-action-icon btn-share" data-share-id="${entry.anchor_id}" title="Copy link to this release note">
                             ${ICONS.share}
                         </button>
@@ -387,6 +391,15 @@ function renderEntry(container, entry, items, searchQuery) {
             const card = btn.closest('.note-card');
             const content = card.querySelector('.card-content').innerHTML;
             tweetRelease(btn.dataset.anchorId, btn.dataset.date, btn.dataset.type, content);
+        });
+    });
+
+    dayDiv.querySelectorAll('.btn-copy-note').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const card = btn.closest('.note-card');
+            const content = card.querySelector('.card-content').innerHTML;
+            copyNoteToClipboard(btn, btn.dataset.date, btn.dataset.type, content);
         });
     });
 
@@ -574,6 +587,14 @@ function setupEventListeners() {
     document.getElementById('btn-refresh').addEventListener('click', () => {
         fetchReleases(true);
     });
+
+    // Export CSV Button Click
+    const exportBtn = document.getElementById('btn-export-csv');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            exportToCSV();
+        });
+    }
 
     // Theme Toggle Click
     document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
@@ -846,4 +867,135 @@ function escapeHtml(text) {
 
 function escapeRegex(string) {
     return string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+// Copy single release note formatted text to clipboard
+function copyNoteToClipboard(btn, date, type, contentHtml) {
+    const plainText = stripHtml(contentHtml).trim();
+    const formattedText = `BigQuery Update (${date}) [${type}]:\n\n${plainText}`;
+    
+    navigator.clipboard.writeText(formattedText).then(() => {
+        showToast('Release note copied to clipboard!', 'success');
+        
+        // Visual feedback
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = ICONS.check;
+        btn.style.color = 'var(--success)';
+        
+        setTimeout(() => {
+            btn.innerHTML = originalHtml;
+            btn.style.color = '';
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy release note', err);
+        showToast('Failed to copy release note', 'error');
+    });
+}
+
+// Get filtered release notes matching current state filters
+function getFilteredReleases() {
+    const activeCategory = appState.filters.category;
+    const searchQuery = appState.filters.search.toLowerCase().trim();
+    const bookmarkedOnly = appState.filters.bookmarkedOnly;
+    
+    const results = [];
+    
+    appState.releases.forEach(entry => {
+        entry.items.forEach(item => {
+            // Check Category filter
+            if (activeCategory !== 'all') {
+                let mappedType = item.type;
+                if ((item.type === 'Fixed' || item.type === 'Resolved') && activeCategory === 'Issue') mappedType = 'Issue';
+                if (item.type === 'Deprecated' && activeCategory === 'Change') mappedType = 'Change';
+                if (mappedType !== activeCategory) return;
+            }
+            
+            // Check Bookmark filter
+            const noteId = `${entry.anchor_id}_${item.type}`;
+            if (bookmarkedOnly && !appState.bookmarks.has(noteId)) {
+                return;
+            }
+            
+            // Check Search filter
+            if (searchQuery !== '') {
+                const itemContentText = stripHtml(item.content).toLowerCase();
+                const itemTypeText = item.type.toLowerCase();
+                const entryDateText = entry.date.toLowerCase();
+                
+                const matchesSearch = itemContentText.includes(searchQuery) || 
+                                      itemTypeText.includes(searchQuery) || 
+                                      entryDateText.includes(searchQuery);
+                if (!matchesSearch) return;
+            }
+            
+            results.push({
+                date: entry.date,
+                type: item.type,
+                content: stripHtml(item.content).trim(),
+                link: `${window.location.origin}${window.location.pathname}#${entry.anchor_id}`
+            });
+        });
+    });
+    
+    return results;
+}
+
+// Export the filtered release notes to a CSV file
+function exportToCSV() {
+    const filtered = getFilteredReleases();
+    if (filtered.length === 0) {
+        showToast('No releases to export.', 'error');
+        return;
+    }
+    
+    const headers = ['Date', 'Type', 'Content', 'Link'];
+    
+    const escapeCSVValue = (val) => {
+        if (val === undefined || val === null) return '';
+        let formatted = val.toString().replace(/"/g, '""');
+        if (formatted.includes(',') || formatted.includes('\n') || formatted.includes('"')) {
+            formatted = `"${formatted}"`;
+        }
+        return formatted;
+    };
+    
+    const csvRows = [];
+    csvRows.push(headers.join(','));
+    
+    filtered.forEach(item => {
+        const row = [
+            escapeCSVValue(item.date),
+            escapeCSVValue(item.type),
+            escapeCSVValue(item.content),
+            escapeCSVValue(item.link)
+        ];
+        csvRows.push(row.join(','));
+    });
+    
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    
+    let fileName = 'bigquery_release_notes';
+    if (appState.filters.category !== 'all') {
+        fileName += `_${appState.filters.category.toLowerCase()}`;
+    }
+    if (appState.filters.search) {
+        fileName += `_search_${appState.filters.search.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+    }
+    if (appState.filters.bookmarkedOnly) {
+        fileName += '_bookmarks';
+    }
+    fileName += `_${new Date().toISOString().slice(0, 10)}.csv`;
+    
+    link.setAttribute('download', fileName);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    showToast(`Successfully exported ${filtered.length} updates to CSV!`, 'success');
 }
